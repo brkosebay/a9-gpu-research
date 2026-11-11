@@ -7,8 +7,8 @@ PowerVR driver) and Zink provide OpenGL ES on top.
 
 This repository holds the **research and measurements** behind the Orchard 0.4 GPU work: what the firmware
 and iOS do, what we changed and why, and the numbers before and after. It is a curated selection, built
-from a private lab workspace by a scripted, audited export. The code is not here (see
-[Where the code lives](#where-the-code-lives)).
+from a private lab workspace by a scripted, audited export. The driver code is not here (see
+[Where the code lives](#where-the-code-lives)). Our porting tools are, under [tools/](tools/README.md).
 
 The foundational notes from 2026-11-02 (firmware interface, UAPI, shader ISA, first triangle) are in the
 earlier repository [brkosebay/a9-gpu](https://github.com/brkosebay/a9-gpu).
@@ -21,6 +21,15 @@ copied data tables. Apple behaviour is described in our own words: register and 
 sequences, conditions and numbers. Apple functions are cited by address and by the names we gave them
 in our analysis. Nothing here covers bypassing a platform security feature, and the boot path is out
 of scope. Per-device data (serials, MACs, calibration, NVRAM) is not included.
+
+## Start here: porting another Apple PowerVR GPU
+
+If you are bringing up Linux GPU support on an older Apple PowerVR GPU (A7, A8/A8X, A9/A9X), read these in order:
+
+1. **[FIRST-TRIANGLE.md](FIRST-TRIANGLE.md)**: the bring-up path from power-on to first pixels, in order. Each step says what it needs, what went wrong, how we knew, and where the evidence is.
+2. **[HARD-PROBLEMS.md](HARD-PROBLEMS.md)**: a symptom-indexed catalogue of the hard problems we solved or characterised after first pixels: firmware handshake, power, job submission, Mesa/Zink, memory, video and tooling.
+3. **[PORTING-OLDER-GENERATIONS.md](PORTING-OLDER-GENERATIONS.md)**: for each subsystem, what is probably common across the generation, what is chip-specific, and how to re-derive it. It also says how to use these notes with an AI agent.
+4. **[tools/](tools/README.md)**: our scripts for firmware extraction from the kernelcache, META disassembly, the glmark2 GPU census, Metal compiler probing and the RAM census (MIT).
 
 ## Status on 2026-11-11
 
@@ -41,12 +50,15 @@ Lane titles that say "host only, not device-proven" were written before the flig
 above are the later device results.
 
 **Still open:**
-- **System sleep (s2idle)** is the release blocker. On cold boot it was refused after a 1 s drain. The cause is a deferred close that was never released, and a fix is built but not flown. Warm (kexec) boots keep every power domain on, so GPU sleep is refused by name there. That is pending a decision. See [lane SLEEP](docs/release/orchard-0.4/lane-sleep/README.md).
-- **Next performance target: frames in flight.** About 0.4 ms per job over no-park is the firmware's real wake. Keeping the next frame queued (as Metal does) should hide it. No write-up exists yet.
+- **System sleep (s2idle)** is the release blocker. On cold boot it was refused after a 1 s drain. The cause is a deferred close that was never released. A second refusal, `busy=accepted`, came from a set-once flag counted as work. Fixes for both are built but not flown. Warm (kexec) boots keep every power domain on, so GPU sleep is refused by name there. That is pending a decision. See [lane SLEEP](docs/release/orchard-0.4/lane-sleep/README.md).
+- **Next performance target: frames in flight.** About 0.4 ms per job over no-park is the firmware's real wake. Keeping the next frame queued (as Metal does) should hide it. The analysis and a Mesa change (built, not flown) are in [frames-in-flight](docs/gpu/frames-in-flight-20261111.md).
 
 ## Map of the docs
 
-**Start here**
+**Bring-up (2026-10-22 to 2026-11-02)**
+- [docs/gpu/agx-g5p-bringup.md](docs/gpu/agx-g5p-bringup.md): power, Fender, reset/SLC/MMU, META boot, LDR load, the ring. The curated experiment docs it leads to are listed in [FIRST-TRIANGLE.md](FIRST-TRIANGLE.md).
+
+**Status**
 - [docs/gpu/STATUS.md](docs/gpu/STATUS.md): the broad status as of 2026-11-06 (what works, open problems). The table above supersedes its numbers.
 - The four flight records: [G](docs/release/orchard-0.4/integration/FLIGHT-G.md) (the IP0 failure), [H2](docs/release/orchard-0.4/integration/FLIGHT-H2.md) (self-park, state 12), [H3](docs/release/orchard-0.4/integration/FLIGHT-H3.md) (doorbell, AMC) and [RC2](docs/release/orchard-0.4/integration/FLIGHT-RC2.md) (twiddled targets, s2idle).
 
@@ -98,5 +110,5 @@ The notes were written largely by an AI coding agent (Claude) working for the re
 
 ## Licence
 
-The text in this repository is offered under [CC BY 4.0](LICENSE.md).
+The text in this repository is offered under [CC BY 4.0](LICENSE.md). The scripts under `tools/` are MIT ([tools/LICENSE.md](tools/LICENSE.md)).
 Trademarks belong to their owners. This project has no affiliation with Apple or Imagination.

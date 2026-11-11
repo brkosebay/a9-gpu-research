@@ -7,6 +7,9 @@ Bundle **`build/orchard-0.4/orchard-04-rc2s/orchard-04-rc2s.tar.gz`**, sha256
 Device commands: `DEVICE-COMMANDS.txt` (not published) (also in the bundle dir).
 
 **Status in one paragraph.**
+- **SLEEP2 update (rc2s2):** rc2s's cold flight showed that 0035 was not sufficient. A second term, the boot-long
+  render claim `accepted`, refused every attempt. drivers/drm/0037–0039 remove it and name every remaining
+  reason. See [SLEEP2](#sleep2-rc2s-cold-refused-busyaccepted-cause-found-fixed-in-rc2s2-host-only-not-device-proven).
 - **A (cold):** found a sufficient cause and fixed it (drivers/drm/0035). It is confirmed only when the cold flight
   prints `GPU-PM prepared` and `GPU-PM off`/`on`.
 - **B (warm):** no warm-specific cause identified from the available data. The rc1 warm logs are not on the Mac, and
@@ -152,3 +155,151 @@ again after detach us=N`, or on failure `step=park-after-detach` with the R1 wor
   rtcwake with an empty summary diff; then lane S's matrix.
 - **CHANGELOG.** "J71t: s2idle is no longer refused by the GPU after a GPU client exits; every sleep refusal names
   its reason in the kernel log. After a warm (kexec) restart the GPU still refuses sleep; cold boot to sleep."
+
+## SLEEP2: rc2s cold refused `busy=accepted` (cause found, fixed in rc2s2; host only, not device-proven)
+
+Bundle **`build/orchard-0.4/orchard-04-rc2s2/orchard-04-rc2s2.tar.gz`**, sha256
+`5048374bf5cd…`. Release
+`7.3.0-rc1-orchard-apple-16k-topic-rc2s2`. As with rc2s, only the kernel changed: userspace, runner and tools are
+rc2's byte for byte, and the DTB is rc2's (the packager asserts both). Device commands:
+`DEVICE-COMMANDS-rc2s2.txt` (not published) (also `DEVICE-COMMANDS.txt` in the bundle dir).
+
+| What | Where |
+|---|---|
+| Linux `lane-sleep/s2idle` | `b6277b2bb` drivers/drm/0037, `dc485fab0` drivers/drm/0038, `73810a71c` drivers/drm/0039, on `0347de210` (rc2s) |
+| Orchard `lane-sleep/rc2s` | `f35ba56`: the 3 patches (`tools/kernel-tree/export.py`, which reports that they reproduce the branch exactly) plus one line each in `chips/s8003.toml` and `devices/j71t/device.toml`; the matrix is unchanged |
+| Build | `ORCHARD_KERNEL_TEST_SUFFIX=rc2s2 JOBS=6 scripts/orchard/build-orchard-kernel.sh build/orchard-0.4/lane-sleep/orchard out-rc2s2 j71t`: PASS, 77 modules, vermagic asserted per .ko. The warning set is identical to rc2s's (log). Build volume: 5.6 GiB free afterwards |
+| Package | `python3 scripts/orchard/package-orchard04-rc2s2.py` (rc2s's packager, plus asserts for 0037–0039 and that the `accepted` token is gone from the Image: rc2s 1, rc2s2 0) |
+| Host tests | Clean `git archive` in `python:3.12-slim` with `PYTHONPATH=src`: Ran 735, failures=28, errors=24, skipped=26. The failure set is **identical** at `a576895` (rc2s) and `f35ba56` (diffed by name). It is mostly `ManifestError not raised`, so it comes from the environment and not from this lane. The G5P tests (`test_agx_g5p`) load and pass. This is not lane SLEEP's 735/OK environment. Host tests are not hardware results. |
+
+### Cause (evidence)
+
+- **The busy token is a latch, not a count.** `g5p_sleep_busy()` refuses on `atomic_read(&d->accepted)`. `d->accepted`
+  has exactly one writer: `atomic_cmpxchg(&d->accepted, 0, 1)` in `g5p_render_device_claim()` (`drm-render.inc:2093`),
+  on the **first** accepted job of the boot. It is cleared only by `atomic_set(..., 0)` at probe (`a9-gpu-drm.c:1180`).
+  The driver says so itself: "The first accepted job claims the device for render until reboot" (`drm-render.inc:2061`);
+  "One render attachment per boot: accepted stays held" (`drm-render.inc:1749`). So once any client has rendered
+  (labwc does at login), every sleep attempt for the rest of the boot was refused, whatever the GPU state.
+- **The intended term already exists.** lane GS's design (lane-gs/README.md: "in-flight or accepted work (prepare drains
+  it)") means jobs accepted but not yet signalled. That count is `d->r8_queued`: incremented at accept
+  (`drm-render.inc:2361`, compute `drm-compute-v1.inc:657`), decremented right before `dma_fence_signal`
+  (`drm-render.inc:1204`). It is already the next term in the predicate.
+- **History.** The term was in the 0025 predicate (`rd->cu_sequence || atomic_read(&d->accepted) || ...`) from the
+  start. `close_deferred` was ORed into the same expression, so rc2's refusal could not tell them apart. Lane SLEEP
+  noted that "the log cannot prove no other silent busy term was also set". 0035 removed `close_deferred`, and 0034's
+  first-match order then exposed `accepted`. Neither 0026, 0031 nor 0035 uses `d->accepted`, and nothing depends on
+  the claim for sleep. Resume keeps the claim on purpose: the same `g->boot`, `render_claimed` and
+  `g5p_rv3_rebuild_host()` contexts, the path 0035's rationale already relies on. This was never a regression: no
+  build has ever admitted G5P sleep after a client rendered.
+- **Log fit** (`flight-rc2s/dmesg-cold-sleepcheck.txt`). At 468.71 the close completes (`plan=unbind ... claimant=0`)
+  and at 468.72 the context is released. 5 s later, 1000 ms of drain (`client_users=0 busy=accepted`), then
+  `stage=state why=accepted`. The term never changes because nothing can change it. The second cycle (485.4) shows
+  the same pattern.
+
+**Why `suspend_ready` said `ready`.** check() runs the same predicate. It got `accepted` with `drains=true` (it is
+neither static nor never-park), and so answered 0: "prepare drains it". The criterion was the same, but its premise
+was wrong: a drainable state with nothing in flight never drains.
+
+### Fix
+
+- **drm/0037: do not refuse system sleep on the render claim.** The `accepted` term is gone; `r8_queued` remains. The
+  R1 certificate, the rings, the TA/3D stamps and every other busy state are unchanged. The quiescence criterion is
+  not loosened: only a term that never measured work is removed.
+- **drm/0038: name every held sleep busy state.**
+  - The predicate is now a mask. Refusal lines (`drain bound`, `stage=state`, `GPU-PM suspend refused`,
+    `suspend_ready`) print every held reason at once, '+'-joined so each stays one token.
+  - First-match hid a term behind another twice in a row (`close_deferred` hid `accepted`). The terms after it
+    (`stamp-*`, `unconsumed-*`, `unretired-*`) have never been evaluated on hardware. One flight now names them all.
+  - The stamp and per-context reads still run only when nothing is in flight and no failure or recovery can replace
+    the boot, as before.
+  - Prepare's decision is unchanged.
+- **drm/0039: answer the readiness query with prepare's criterion.**
+  - A drainable reason counts as "in flight" only while `r8_queued > 0`. Otherwise check() answers
+    `not-ready 201000000.gpu:busy/<reasons> -16`, as prepare's state check will after its 1 s drain.
+  - Prepare itself is unchanged. A transient snapshot (a close item still queued without a job) may read busy for a
+    moment, which is harmless.
+  - Ordering checked: `executing` clears and `retired[]` is set before the `r8_queued` decrement.
+- **Locking.** `rd->lock` is a leaf lock: allocations only, no `g->lock` or firmware wait under it. It is taken in the
+  same cases as before.
+- **Not touched:** `g5p_sleep_gfx_power_held()`/`keep_on` (lane KEEPON), 0034–0036 (rc2s flew them).
+
+**The other busy terms, audited statically** (none of them has run on hardware after `accepted`):
+- `queued`: an entity leaves `sched.run` when its last job is picked, or after its close item runs
+  (`g5p_rs_pick()`, `g5p_rs_closed()`). Not a latch.
+- `unconsumed-*` / `unretired-*`: flags are cleared at prepare and set at TA/3D completion. The completion sets them
+  only `if (rd->sequence == seq)`, but an ahead job is always the same context's (`g5p_rv3_ahead_next(d, r, ..)`
+  reads `r->entity`) and clears that context's flags at its own prepare. A released context leaves `rd->contexts`
+  (`g5p_render_release()`). Not a latch.
+- `stamp-ta/3d`: both engines' stamps must equal `rd->sequence`, and every render job writes both.
+  - Open, error path only: `rd->sequence` advances at prepare, before the TA publish. A publish that fails without
+    making the epoch terminal would leave `stamp-*` held. On a healthy idle desktop this is not expected.
+  - If it happens, 0038 names it.
+- `executing` / `ahead`: they clear before the job's `r8_queued` decrement or do not outlive it.
+
+Only the flight can show the firmware-side terms: the stamp values themselves, the rings, `boot-drain` and the R1
+certificate.
+
+### `device_pinned` ≈ 400 MB: not a glmark2 leak (answer for lane RAM2)
+
+The premise "after the last client exits" does not hold: `device_pinned` and `live_bo_bytes` are **device-wide**
+(rc2-ram-20261111.md), and labwc and its peers stay open. Over the run:
+
+| When | live_bos | device_pinned |
+|---|---|---|
+| 463.11, before glmark2 | 57 | 375712K |
+| 468.55–468.74, during glmark2's close | 64 → 59 | 400896K → 412592K |
+| 475.03, 6 s later | 57 | **375728K** |
+
+After glmark2's close the counter rose to 412592K, with labwc still allocating. 6 s later it was back to 375712K,
+16K (one 16 KiB page) above the starting value. The 485 s cycle shows the same shape. So glmark2's pins come back; the
+roughly 25 MB still held at its release are buffers that labwc (its dma-buf importer) holds until it drops the
+surface.
+
+The log itself shows three things:
+- `live_bo_bytes == device_pinned` at both idle baselines (375712K, 375728K).
+- The rise at VM release, 400896K → 412592K, is identical in both cycles.
+- The close of glmark2 leaves 59 BOs / 400896K live in both cycles.
+
+The rest is **inferred, pending the `g5p_bos` captures**:
+- that labwc allocated the extra 11.7 MB;
+- that labwc holds the ~25 MB at release as dma-buf imports;
+- that the ~375 MB baseline is the open clients' standing set (Mesa arena, BO caches, scanout).
+
+Whether it is cache or leak cannot be decided from this log. The one-page drift after one cycle is too small to call.
+DEVICE-COMMANDS-rc2s2 captures `debugfs dri/*/g5p_bos` (owner, size, vm_pins) at idle before, after glmark2, after
+resume and at final idle for each of cold and rtc-1..3. A baseline that grows per cycle is a leak; a flat one is cache.
+
+### Device test (exact lines)
+
+Cold boot of `orchard-04-rc2s2` (DFU → PSCI launcher), `sleep-check.sh cold`, then lane S's matrix (RTC ×3,
+Home ×3, charger in/out) with glmark2, NVMe, USB and touch after each resume.
+
+Pass: `suspend_ready.before` = `ready`, then:
+
+```
+PM: suspend entry (s2idle)
+GPU-PM prepared: admission reserved ms=<small>       (no "drain bound" line)
+GPU-PM suspend detach held=.. contexts=.. deferred=../0
+GPU-PM suspend parked again after detach us=..
+GPU-PM off: stable-off epoch=..
+GPU-PM on: fresh ALIVE gen=.. epoch=..
+GPU-PM complete failed=0
+PM: suspend exit                                     rtcwake rc=0, ~20 s
+```
+
+**If it still refuses, the line now names every reason**, e.g. `stage=state why=stamp-3d+unretired-3d`. Everything
+from `stage=drain` / `stage=certificate` onward has never run on hardware. If it says `accepted`, the old kernel
+booted.
+
+Warm: unchanged (`warm-gfx-power-held`, row 11; lane KEEPON).
+
+### Draft PR text addendum (not published)
+
+- **Changes**, added to the list above:
+  - drm/0037: the sleep busy predicate no longer reads the boot-long render claim as work.
+  - drm/0038: every held busy reason is logged at once.
+  - drm/0039: `suspend_ready` refuses a drainable reason with no job in flight.
+- **Other devices:** none; G5P is J71t only.
+- **Order:** after drm/0036.
+- **CHANGELOG** (replaces the first clause of the line above): "J71t: s2idle is no longer refused by the GPU once
+  any GPU client has run".

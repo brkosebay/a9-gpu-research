@@ -1,0 +1,3 @@
+{"libraries":{"paths":[{"label":"tri","path":"tri.metallib"}]},
+ "pipelines":{"render_pipelines":[{"vertex_function":"alias:tri#v_tri","fragment_function":"alias:tri#f_red","color_attachments":[{"pixel_format":"BGRA8Unorm"}]}],
+ "compute_pipelines":[{"compute_function":"alias:tri#k_fill"}]}}

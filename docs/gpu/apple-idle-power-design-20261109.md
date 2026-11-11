@@ -185,7 +185,7 @@ is choosing. Measure GPU ms/frame on the desktop and Aquarium.
 ## 5. iOS probe package (one session, ≈ 7 min device time)
 
 Built (Mac): `sh scripts/gpu/build-apple-idle-power-probe.sh` → `build/gpu/apple-idle-power/{bin,SHA256SUMS}`.
-- `ios-gpu-probe-pt` = `ios-gpu-probe.c` + `power-timeline.inc.c` (`-DPOWER_TIMELINE`).
+*(Passage removed: boot-chain or iOS-side tooling detail, out of scope for this repository.)*
 - `ios-agx-kdebug`, `power-session.sh`, `allow-sudo-pt.sh`, `metal-triangle`, `ios-ioreport`.
 
 Runner `scripts/gpu/apple-idle-power-probe.sh`:
